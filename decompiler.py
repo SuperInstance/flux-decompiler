@@ -200,7 +200,7 @@ class FluxDecompiler:
                     labels[target] = f"lbl_{target:03d}"
                     comment = f"if R{raw[1]}!=0 goto lbl_{target:03d}"
                 elif op == 0x43:  # JMP
-                    offset = self._signed16(raw[2], raw[3]) if len(raw) > 3 else 0
+                    offset = self._signed16(raw[1], raw[2]) if len(raw) > 2 else 0
                     target = i + offset
                     jump_target = target
                     jump_type = JumpType.UNCONDITIONAL
@@ -208,6 +208,11 @@ class FluxDecompiler:
                 elif op == 0x46:  # LOOP
                     labels[i] = f"loop_{i:03d}"
                     jump_type = JumpType.LOOP
+                    offset = self._signed16(raw[2], raw[3]) if len(raw) > 3 else 0
+                    target = i + offset
+                    jump_target = target
+                    if target != i:
+                        labels[target] = f"lbl_{target:03d}"
                     comment = f"R{raw[1]} decrements"
             
             # Handle CALL
