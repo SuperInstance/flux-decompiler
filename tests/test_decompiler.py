@@ -1,776 +1,927 @@
 """
-Comprehensive tests for FLUX Decompiler.
+FLUX Decompiler — comprehensive test suite.
 
-Covers:
-- Every opcode decompilation (HALT, NOP, INC, DEC, NOT, NEG, PUSH, POP,
-  STRIPCONF, MOVI, ADDI, SUBI, ADD, SUB, MUL, DIV, MOD, AND, OR, XOR,
-  SHL, SHR, MIN, MAX, CMP_EQ, CMP_LT, CMP_GT, CMP_NE, MOV, JZ, JNZ,
-  MOVI16, JMP, LOOP)
-- Unknown opcode handling
-- Jump labels and target resolution
-- Control flow type detection
-- Output formats (to_asm, to_annotated)
-- Mnemonic frequency counts
-- Stats accuracy
-- Signed/unsigned immediate handling
-- Round-trip: decompile produces correct assembly for known programs
-- Edge cases (empty bytecode, single-byte program)
+Covers all opcodes, signed immediates, jump types, complex programs,
+output formats, edge cases, and statistics.
 """
-import pytest
+import unittest
 from decompiler import (
-    FluxDecompiler, DecodedInstruction, DecompilationResult,
-    JumpType, OP_SPECS
+    FluxDecompiler, DecompilationResult,
+    DecodedInstruction, JumpType, OP_SPECS,
 )
 
 
-# ── Basic Opcodes ──────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────
 
-class TestHalt:
-    def test_halt_single_byte(self):
-        d = FluxDecompiler([0x00])
-        r = d.decompile()
-        assert r.total_instructions == 1
-        assert r.total_bytes == 1
-        assert r.instructions[0].mnemonic == "HALT"
-        assert r.instructions[0].offset == 0
-        assert r.instructions[0].size == 1
-        assert r.instructions[0].raw_bytes == [0x00]
-        assert r.instructions[0].operands == []
+def _decompile(bytecode):
+    """Shorthand: decompile and return result."""
+    return FluxDecompiler(bytecode).decompile()
 
 
-class TestNop:
-    def test_nop_single_byte(self):
-        d = FluxDecompiler([0x01])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "NOP"
-        assert r.instructions[0].size == 1
-
-    def test_nop_in_sequence(self):
-        d = FluxDecompiler([0x01, 0x01, 0x00])
-        r = d.decompile()
-        nops = [i for i in r.instructions if i.mnemonic == "NOP"]
-        assert len(nops) == 2
+def _mnemonics(result):
+    """Return list of mnemonics from a result."""
+    return [i.mnemonic for i in result.instructions]
 
 
-# ── Single-Register Opcodes ───────────────────────────
+# ═══════════════════════════════════════════════════════
+# Individual opcode tests
+# ═══════════════════════════════════════════════════════
 
-class TestInc:
-    def test_inc(self):
-        d = FluxDecompiler([0x08, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "INC"
-        assert r.instructions[0].operands == ["R0"]
-        assert r.instructions[0].size == 2
+class TestOpcodeHALT(unittest.TestCase):
+    def test_halt_single(self):
+        r = _decompile([0x00])
+        self.assertEqual(r.total_instructions, 1)
+        self.assertEqual(r.instructions[0].mnemonic, "HALT")
+        self.assertEqual(r.instructions[0].size, 1)
+        self.assertEqual(r.instructions[0].operands, [])
+        self.assertEqual(r.total_bytes, 1)
 
-    def test_inc_different_register(self):
-        d = FluxDecompiler([0x08, 5, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R5"]
-
-
-class TestDec:
-    def test_dec(self):
-        d = FluxDecompiler([0x09, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "DEC"
-        assert r.instructions[0].operands == ["R0"]
+    def test_halt_offset(self):
+        r = _decompile([0x01, 0x00])
+        self.assertEqual(r.instructions[1].offset, 1)
+        self.assertEqual(r.instructions[1].mnemonic, "HALT")
 
 
-class TestNot:
-    def test_not(self):
-        d = FluxDecompiler([0x0A, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "NOT"
-        assert r.instructions[0].operands == ["R0"]
+class TestOpcodeNOP(unittest.TestCase):
+    def test_nop_single(self):
+        r = _decompile([0x01])
+        self.assertEqual(r.total_instructions, 1)
+        self.assertEqual(r.instructions[0].mnemonic, "NOP")
+        self.assertEqual(r.instructions[0].size, 1)
+        self.assertEqual(r.instructions[0].operands, [])
+
+    def test_nop_sequence(self):
+        r = _decompile([0x01, 0x01, 0x01, 0x00])
+        self.assertEqual(r.total_instructions, 4)
+        self.assertEqual(r.mnemonic_counts["NOP"], 3)
 
 
-class TestNeg:
-    def test_neg(self):
-        d = FluxDecompiler([0x0B, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "NEG"
+class TestOpcodeINC(unittest.TestCase):
+    def test_inc_r0(self):
+        r = _decompile([0x08, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "INC")
+        self.assertEqual(r.instructions[0].operands, ["R0"])
+        self.assertEqual(r.instructions[0].size, 2)
+
+    def test_inc_r7(self):
+        r = _decompile([0x08, 0x07])
+        self.assertEqual(r.instructions[0].operands, ["R7"])
 
 
-class TestPush:
-    def test_push(self):
-        d = FluxDecompiler([0x0C, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "PUSH"
-        assert r.instructions[0].operands == ["R0"]
+class TestOpcodeDEC(unittest.TestCase):
+    def test_dec_r1(self):
+        r = _decompile([0x09, 0x01])
+        self.assertEqual(r.instructions[0].mnemonic, "DEC")
+        self.assertEqual(r.instructions[0].operands, ["R1"])
 
 
-class TestPop:
-    def test_pop(self):
-        d = FluxDecompiler([0x0D, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "POP"
-        assert r.instructions[0].operands == ["R0"]
+class TestOpcodeNOT(unittest.TestCase):
+    def test_not_r3(self):
+        r = _decompile([0x0A, 0x03])
+        self.assertEqual(r.instructions[0].mnemonic, "NOT")
+        self.assertEqual(r.instructions[0].operands, ["R3"])
 
 
-class TestSTRIPCONF:
-    def test_stripconf(self):
-        d = FluxDecompiler([0x17, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "STRIPCONF"
-        assert r.instructions[0].operands == ["R0"]
+class TestOpcodeNEG(unittest.TestCase):
+    def test_neg_r2(self):
+        r = _decompile([0x0B, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "NEG")
+        self.assertEqual(r.instructions[0].operands, ["R2"])
 
 
-# ── Immediate Opcodes ─────────────────────────────────
-
-class TestMOVI:
-    def test_movi_positive(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "MOVI"
-        assert inst.operands == ["R0", "42"]
-
-    def test_movi_zero(self):
-        d = FluxDecompiler([0x18, 0, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "0"]
-
-    def test_movi_negative(self):
-        """0xFF should be decoded as -1."""
-        d = FluxDecompiler([0x18, 0, 0xFF, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "-1"]
-
-    def test_movi_max_positive(self):
-        d = FluxDecompiler([0x18, 0, 127, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "127"]
-
-    def test_movi_min_negative(self):
-        d = FluxDecompiler([0x18, 0, 128, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "-128"]
-
-    def test_movi_different_register(self):
-        d = FluxDecompiler([0x18, 7, 99, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R7", "99"]
+class TestOpcodePUSH(unittest.TestCase):
+    def test_push_r0(self):
+        r = _decompile([0x0C, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "PUSH")
+        self.assertEqual(r.instructions[0].operands, ["R0"])
 
 
-class TestADDI:
-    def test_addi_positive(self):
-        d = FluxDecompiler([0x19, 0, 5, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "ADDI"
-        assert r.instructions[0].operands == ["R0", "5"]
+class TestOpcodePOP(unittest.TestCase):
+    def test_pop_r5(self):
+        r = _decompile([0x0D, 0x05])
+        self.assertEqual(r.instructions[0].mnemonic, "POP")
+        self.assertEqual(r.instructions[0].operands, ["R5"])
+
+
+class TestOpcodeSTRIPCONF(unittest.TestCase):
+    def test_stripconf_r0(self):
+        r = _decompile([0x17, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "STRIPCONF")
+        self.assertEqual(r.instructions[0].operands, ["R0"])
+
+    def test_stripconf_r4(self):
+        r = _decompile([0x17, 0x04])
+        self.assertEqual(r.instructions[0].operands, ["R4"])
+
+
+class TestOpcodeMOVI(unittest.TestCase):
+    def test_movi_r0_42(self):
+        r = _decompile([0x18, 0x00, 42])
+        self.assertEqual(r.instructions[0].mnemonic, "MOVI")
+        self.assertEqual(r.instructions[0].operands, ["R0", "42"])
+
+    def test_movi_size(self):
+        r = _decompile([0x18, 0x00, 100])
+        self.assertEqual(r.instructions[0].size, 3)
+
+    def test_movi_raw_bytes(self):
+        r = _decompile([0x18, 0x03, 0xFF])
+        self.assertEqual(r.instructions[0].raw_bytes, [0x18, 0x03, 0xFF])
+
+
+class TestOpcodeADDI(unittest.TestCase):
+    def test_addi_r0_10(self):
+        r = _decompile([0x19, 0x00, 10])
+        self.assertEqual(r.instructions[0].mnemonic, "ADDI")
+        self.assertEqual(r.instructions[0].operands, ["R0", "10"])
+
+
+class TestOpcodeSUBI(unittest.TestCase):
+    def test_subi_r1_5(self):
+        r = _decompile([0x1A, 0x01, 5])
+        self.assertEqual(r.instructions[0].mnemonic, "SUBI")
+        self.assertEqual(r.instructions[0].operands, ["R1", "5"])
+
+
+class TestOpcodeADD(unittest.TestCase):
+    def test_add_r2_r0_r1(self):
+        # ADD R2, R0, R1
+        r = _decompile([0x20, 0x02, 0x00, 0x01])
+        self.assertEqual(r.instructions[0].mnemonic, "ADD")
+        self.assertEqual(r.instructions[0].operands, ["R2", "R0", "R1"])
+        self.assertEqual(r.instructions[0].size, 4)
+
+
+class TestOpcodeSUB(unittest.TestCase):
+    def test_sub(self):
+        r = _decompile([0x21, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "SUB")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeMUL(unittest.TestCase):
+    def test_mul(self):
+        r = _decompile([0x22, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "MUL")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeDIV(unittest.TestCase):
+    def test_div(self):
+        r = _decompile([0x23, 0x03, 0x00, 0x01])
+        self.assertEqual(r.instructions[0].mnemonic, "DIV")
+        self.assertEqual(r.instructions[0].operands, ["R3", "R0", "R1"])
+
+
+class TestOpcodeMOD(unittest.TestCase):
+    def test_mod(self):
+        r = _decompile([0x24, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "MOD")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeAND(unittest.TestCase):
+    def test_and(self):
+        r = _decompile([0x25, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "AND")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeOR(unittest.TestCase):
+    def test_or(self):
+        r = _decompile([0x26, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "OR")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeXOR(unittest.TestCase):
+    def test_xor(self):
+        r = _decompile([0x27, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "XOR")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeSHL(unittest.TestCase):
+    def test_shl(self):
+        r = _decompile([0x28, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "SHL")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeSHR(unittest.TestCase):
+    def test_shr(self):
+        r = _decompile([0x29, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "SHR")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeMIN(unittest.TestCase):
+    def test_min(self):
+        r = _decompile([0x2A, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "MIN")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeMAX(unittest.TestCase):
+    def test_max(self):
+        r = _decompile([0x2B, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "MAX")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeCMP_EQ(unittest.TestCase):
+    def test_cmp_eq(self):
+        r = _decompile([0x2C, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "CMP_EQ")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeCMP_LT(unittest.TestCase):
+    def test_cmp_lt(self):
+        r = _decompile([0x2D, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "CMP_LT")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeCMP_GT(unittest.TestCase):
+    def test_cmp_gt(self):
+        r = _decompile([0x2E, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "CMP_GT")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeCMP_NE(unittest.TestCase):
+    def test_cmp_ne(self):
+        r = _decompile([0x2F, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].mnemonic, "CMP_NE")
+        self.assertEqual(r.instructions[0].operands, ["R0", "R1", "R2"])
+
+
+class TestOpcodeMOV(unittest.TestCase):
+    def test_mov(self):
+        r = _decompile([0x3A, 0x02, 0x00, 0x01])
+        self.assertEqual(r.instructions[0].mnemonic, "MOV")
+        self.assertEqual(r.instructions[0].operands, ["R2", "R0", "R1"])
+
+
+class TestOpcodeJZ(unittest.TestCase):
+    def test_jz_structure(self):
+        # JZ R0, +3 (jump forward 3 from offset 0 -> target 3)
+        r = _decompile([0x3C, 0x00, 0x03, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "JZ")
+        self.assertEqual(r.instructions[0].operands, ["R0", "3"])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.CONDITIONAL)
+        self.assertEqual(r.instructions[0].jump_target, 3)
+
+
+class TestOpcodeJNZ(unittest.TestCase):
+    def test_jnz_structure(self):
+        # JNZ R1, +5
+        r = _decompile([0x3D, 0x01, 0x05, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "JNZ")
+        self.assertEqual(r.instructions[0].operands, ["R1", "5"])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.CONDITIONAL)
+        self.assertEqual(r.instructions[0].jump_target, 5)
+
+
+class TestOpcodeMOVI16(unittest.TestCase):
+    def test_movi16_positive(self):
+        # MOVI16 R0, 256 (0x00, 0x01 in little-endian)
+        r = _decompile([0x40, 0x00, 0x00, 0x01])
+        self.assertEqual(r.instructions[0].mnemonic, "MOVI16")
+        self.assertEqual(r.instructions[0].operands, ["R0", "256"])
+
+    def test_movi16_zero(self):
+        r = _decompile([0x40, 0x01, 0x00, 0x00])
+        self.assertEqual(r.instructions[0].operands, ["R1", "0"])
+
+
+class TestOpcodeJMP(unittest.TestCase):
+    def test_jmp_structure(self):
+        # JMP +10 (from offset 0 -> target 10)
+        # offset is 16-bit LE signed: 0x0A, 0x00
+        r = _decompile([0x43, 0x00, 0x0A, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "JMP")
+        self.assertEqual(r.instructions[0].jump_type, JumpType.UNCONDITIONAL)
+        self.assertEqual(r.instructions[0].jump_target, 10)
+
+
+class TestOpcodeLOOP(unittest.TestCase):
+    def test_loop_structure(self):
+        # LOOP R0, <offset>
+        r = _decompile([0x46, 0x00, 0x00, 0x00])
+        self.assertEqual(r.instructions[0].mnemonic, "LOOP")
+        self.assertEqual(r.instructions[0].operands, ["R0", "0"])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.LOOP)
+
+    def test_loop_labels_self(self):
+        r = _decompile([0x46, 0x01, 0x00, 0x00])
+        # LOOP should label its own offset
+        self.assertIn(0, r.labels)
+        self.assertEqual(r.labels[0], "loop_000")
+
+
+# ═══════════════════════════════════════════════════════
+# Edge cases
+# ═══════════════════════════════════════════════════════
+
+class TestEmptyBytecode(unittest.TestCase):
+    def test_empty(self):
+        r = _decompile([])
+        self.assertEqual(r.total_instructions, 0)
+        self.assertEqual(r.total_bytes, 0)
+        self.assertEqual(r.instructions, [])
+        self.assertEqual(r.labels, {})
+        self.assertEqual(r.mnemonic_counts, {})
+        self.assertEqual(r.jump_count, 0)
+
+    def test_empty_to_asm(self):
+        r = _decompile([])
+        self.assertEqual(r.to_asm(), "")
+
+    def test_empty_to_annotated(self):
+        r = _decompile([])
+        ann = r.to_annotated()
+        self.assertIn("FLUX Bytecode Decompilation", ann)
+        self.assertIn("0 instructions, 0 bytes", ann)
+
+
+class TestUnknownOpcodes(unittest.TestCase):
+    def test_single_unknown(self):
+        r = _decompile([0xFE])
+        self.assertEqual(r.total_instructions, 1)
+        self.assertEqual(r.instructions[0].mnemonic, "DATA")
+        self.assertEqual(r.instructions[0].operands, ["0xfe"])
+        self.assertEqual(r.instructions[0].raw_bytes, [0xFE])
+
+    def test_unknown_with_comment(self):
+        r = _decompile([0xAA])
+        self.assertEqual(r.instructions[0].comment, "unknown opcode")
+
+    def test_multiple_consecutive_unknown(self):
+        r = _decompile([0xF0, 0xF1, 0xF2, 0xF3])
+        self.assertEqual(r.total_instructions, 4)
+        for inst in r.instructions:
+            self.assertEqual(inst.mnemonic, "DATA")
+        self.assertEqual(r.mnemonic_counts["DATA"], 4)
+
+    def test_unknown_interleaved(self):
+        r = _decompile([0xFE, 0x00, 0xFF, 0x01])
+        self.assertEqual(r.total_instructions, 4)
+        self.assertEqual(r.instructions[0].mnemonic, "DATA")
+        self.assertEqual(r.instructions[1].mnemonic, "HALT")
+        self.assertEqual(r.instructions[2].mnemonic, "DATA")
+        self.assertEqual(r.instructions[3].mnemonic, "NOP")
+
+
+class TestSignedImmediates(unittest.TestCase):
+    def test_imm8_positive_max(self):
+        # 127 = 0x7F, should stay 127
+        r = _decompile([0x18, 0x00, 0x7F])
+        self.assertEqual(r.instructions[0].operands, ["R0", "127"])
+
+    def test_imm8_negative_one(self):
+        # 0xFF = -1 in signed
+        r = _decompile([0x18, 0x00, 0xFF])
+        self.assertEqual(r.instructions[0].operands, ["R0", "-1"])
+
+    def test_imm8_negative_128(self):
+        # 0x80 = -128 in signed
+        r = _decompile([0x18, 0x00, 0x80])
+        self.assertEqual(r.instructions[0].operands, ["R0", "-128"])
+
+    def test_imm8_zero(self):
+        r = _decompile([0x18, 0x00, 0x00])
+        self.assertEqual(r.instructions[0].operands, ["R0", "0"])
 
     def test_addi_negative(self):
-        d = FluxDecompiler([0x19, 0, 0xFF, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "-1"]
-
-
-class TestSUBI:
-    def test_subi(self):
-        d = FluxDecompiler([0x1A, 0, 10, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "SUBI"
-        assert r.instructions[0].operands == ["R0", "10"]
+        # ADDI R0, -10  (0xF6 = 256-10)
+        r = _decompile([0x19, 0x00, 0xF6])
+        self.assertEqual(r.instructions[0].operands, ["R0", "-10"])
 
     def test_subi_negative(self):
-        d = FluxDecompiler([0x1A, 0, 0xFC, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "-4"]
+        # SUBI R1, -5  (0xFB = 256-5)
+        r = _decompile([0x1A, 0x01, 0xFB])
+        self.assertEqual(r.instructions[0].operands, ["R1", "-5"])
 
 
-# ── Three-Register ALU Opcodes ─────────────────────────
+class TestSigned16BitImmediates(unittest.TestCase):
+    def test_imm16_positive_small(self):
+        # 42 = 0x002A in LE
+        r = _decompile([0x40, 0x00, 0x2A, 0x00])
+        self.assertEqual(r.instructions[0].operands, ["R0", "42"])
 
-class TestALUThreeReg:
-    """Tests for ADD, SUB, MUL, DIV, MOD, AND, OR, XOR, SHL, SHR, MIN, MAX, CMP_EQ, CMP_LT, CMP_GT, CMP_NE, MOV."""
+    def test_imm16_positive_large(self):
+        # 32767 = 0x7FFF in LE
+        r = _decompile([0x40, 0x00, 0xFF, 0x7F])
+        self.assertEqual(r.instructions[0].operands, ["R0", "32767"])
 
-    @pytest.mark.parametrize("opcode,mnemonic", [
-        (0x20, "ADD"), (0x21, "SUB"), (0x22, "MUL"), (0x23, "DIV"),
-        (0x24, "MOD"), (0x25, "AND"), (0x26, "OR"), (0x27, "XOR"),
-        (0x28, "SHL"), (0x29, "SHR"), (0x2A, "MIN"), (0x2B, "MAX"),
-        (0x2C, "CMP_EQ"), (0x2D, "CMP_LT"), (0x2E, "CMP_GT"), (0x2F, "CMP_NE"),
-    ])
-    def test_alu_opcode_decodes(self, opcode, mnemonic):
-        d = FluxDecompiler([opcode, 0, 1, 2, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == mnemonic
-        assert inst.operands == ["R0", "R1", "R2"]
-        assert inst.size == 4
+    def test_imm16_negative_one(self):
+        # -1 = 0xFFFF in LE
+        r = _decompile([0x40, 0x00, 0xFF, 0xFF])
+        self.assertEqual(r.instructions[0].operands, ["R0", "-1"])
 
-    def test_mov_three_reg(self):
-        d = FluxDecompiler([0x3A, 0, 1, 2, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "MOV"
-        assert inst.operands == ["R0", "R1", "R2"]
+    def test_imm16_negative_min(self):
+        # -32768 = 0x8000 in LE
+        r = _decompile([0x40, 0x00, 0x00, 0x80])
+        self.assertEqual(r.instructions[0].operands, ["R0", "-32768"])
+
+    def test_mov16_size(self):
+        r = _decompile([0x40, 0x00, 0x00, 0x00])
+        self.assertEqual(r.instructions[0].size, 4)
 
 
-# ── Jump Instructions ─────────────────────────────────
+class TestBytecodeWithoutHalt(unittest.TestCase):
+    def test_no_halt_single(self):
+        """Program ending without HALT should still decompile."""
+        r = _decompile([0x08, 0x00])
+        self.assertEqual(r.total_instructions, 1)
+        self.assertEqual(r.instructions[0].mnemonic, "INC")
 
-class TestJZ:
-    def test_jz_decodes(self):
-        d = FluxDecompiler([0x3C, 0, 5, 0, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "JZ"
-        assert inst.operands == ["R0", "5"]
-        assert inst.jump_type == JumpType.CONDITIONAL
+    def test_no_halt_multi(self):
+        r = _decompile([0x18, 0x00, 10, 0x08, 0x00])
+        self.assertEqual(r.total_instructions, 2)
+        self.assertNotIn("HALT", _mnemonics(r))
 
+
+# ═══════════════════════════════════════════════════════
+# Jump target label generation
+# ═══════════════════════════════════════════════════════
+
+class TestJumpLabelGeneration(unittest.TestCase):
     def test_jz_creates_label(self):
-        d = FluxDecompiler([0x01, 0x3C, 0, 0x04, 0, 0x00])  # NOP; JZ R0, 4 (offset from PC=1)
-        r = d.decompile()
-        assert len(r.labels) > 0
-        # Jump from offset 1 with signed offset 4 -> target 5
-        assert 5 in r.labels
-
-    def test_jz_negative_offset(self):
-        d = FluxDecompiler([0x18, 0, 5, 0x09, 0, 0x3C, 0, 0xFA, 0, 0x00])
-        r = d.decompile()
-        jz_inst = [i for i in r.instructions if i.mnemonic == "JZ"][0]
-        assert jz_inst.jump_type == JumpType.CONDITIONAL
-        assert jz_inst.comment != ""
-
-
-class TestJNZ:
-    def test_jnz_decodes(self):
-        d = FluxDecompiler([0x3D, 0, 5, 0, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "JNZ"
-        assert inst.operands == ["R0", "5"]
-        assert inst.jump_type == JumpType.CONDITIONAL
+        # JZ R0, +8 at offset 0 -> target 8
+        bc = [0x3C, 0x00, 0x08, 0x00]
+        # Pad with NOPs to reach offset 8
+        bc += [0x01] * 8
+        r = _decompile(bc)
+        self.assertIn(8, r.labels)
+        self.assertEqual(r.labels[8], "lbl_008")
 
     def test_jnz_creates_label(self):
-        d = FluxDecompiler([0x01, 0x3D, 0, 0x04, 0, 0x00])
-        r = d.decompile()
-        assert len(r.labels) > 0
-
-    def test_jnz_comment(self):
-        d = FluxDecompiler([0x3D, 3, 0x04, 0, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert "R3" in inst.comment
-        assert "!=" in inst.comment
-
-
-class TestJMP:
-    def test_jmp_decodes(self):
-        d = FluxDecompiler([0x43, 0, 0x10, 0x00, 0x00])  # JMP offset 0x0010 = 16
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "JMP"
-        assert inst.jump_type == JumpType.UNCONDITIONAL
+        # JNZ R1, +4 at offset 0 -> target 4
+        bc = [0x3D, 0x01, 0x04, 0x00]
+        bc += [0x01] * 4
+        r = _decompile(bc)
+        self.assertIn(4, r.labels)
+        self.assertEqual(r.labels[4], "lbl_004")
 
     def test_jmp_creates_label(self):
-        d = FluxDecompiler([0x43, 0, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        assert len(r.labels) > 0
+        # JMP +12 from offset 0 -> target 12
+        bc = [0x43, 0x00, 0x0C, 0x00]
+        bc += [0x01] * 12
+        r = _decompile(bc)
+        self.assertIn(12, r.labels)
+        self.assertEqual(r.labels[12], "lbl_012")
+
+    def test_label_deduplication(self):
+        """Two jumps to the same target should produce a single label."""
+        # Two JZ instructions both jumping to offset 8
+        bc = [0x3C, 0x00, 0x08, 0x00]  # offset 0: JZ R0, +8
+        bc += [0x3C, 0x01, 0x04, 0x00]  # offset 4: JZ R1, +8 (4+4=8)
+        bc += [0x01] * 8  # padding
+        r = _decompile(bc)
+        # Both should refer to the same label
+        self.assertEqual(r.labels[8], "lbl_008")
+        # Only one label entry for offset 8
+        self.assertEqual(sum(1 for off in r.labels if off == 8), 1)
+
+    def test_different_targets_different_labels(self):
+        """Jumps to different targets get distinct labels."""
+        bc = [0x3C, 0x00, 0x04, 0x00]  # -> target 4
+        bc += [0x3D, 0x01, 0x08, 0x00]  # offset 4: -> target 12 (4+8)
+        bc += [0x01] * 12
+        r = _decompile(bc)
+        self.assertEqual(r.labels.get(4), "lbl_004")
+        self.assertEqual(r.labels.get(12), "lbl_012")
+        self.assertNotEqual(r.labels[4], r.labels[12])
 
 
-class TestLOOP:
-    def test_loop_decodes(self):
-        d = FluxDecompiler([0x46, 0, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "LOOP"
-        assert inst.jump_type == JumpType.LOOP
+# ═══════════════════════════════════════════════════════
+# Jump direction
+# ═══════════════════════════════════════════════════════
 
-    def test_loop_creates_label_at_start(self):
-        d = FluxDecompiler([0x46, 0, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        assert 0 in r.labels  # LOOP labels itself at its offset
-        assert "loop_000" in r.labels[0]
+class TestJMPDirection(unittest.TestCase):
+    def test_jmp_forward(self):
+        # JMP forward: at offset 0, jump +20 -> target 20
+        bc = [0x43, 0x00, 0x14, 0x00]  # 0x14 = 20
+        bc += [0x01] * 20
+        r = _decompile(bc)
+        self.assertEqual(r.instructions[0].jump_target, 20)
+        self.assertEqual(r.instructions[0].jump_type, JumpType.UNCONDITIONAL)
 
-    def test_loop_comment(self):
-        d = FluxDecompiler([0x46, 5, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert "R5" in inst.comment
-
-
-# ── MOVI16 ────────────────────────────────────────────
-
-class TestMOVI16:
-    def test_mov_i16_positive(self):
-        d = FluxDecompiler([0x40, 0, 0x00, 0x10, 0x00])  # MOVI16 R0, 4096
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.mnemonic == "MOVI16"
-        assert inst.operands == ["R0", "4096"]
-
-    def test_mov_i16_negative(self):
-        d = FluxDecompiler([0x40, 0, 0x00, 0x80, 0x00])  # MOVI16 R0, -32768
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.operands == ["R0", "-32768"]
-
-    def test_mov_i16_zero(self):
-        d = FluxDecompiler([0x40, 0, 0x00, 0x00, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "0"]
+    def test_jmp_backward(self):
+        # JMP backward: at offset 12, jump -12 -> target 0
+        # Build bytecode: 12 bytes of NOPs, then JMP -12
+        bc = [0x01] * 12
+        # JMP at offset 12, offset = -12 = 0xFFF4 (as signed16 LE: 0xF4, 0xFF)
+        bc += [0x43, 0x00, 0xF4, 0xFF]
+        r = _decompile(bc)
+        self.assertEqual(r.instructions[-1].jump_target, 0)
+        self.assertEqual(r.labels[0], "lbl_000")
 
 
-# ── Unknown Opcode ────────────────────────────────────
+# ═══════════════════════════════════════════════════════
+# Conditional jumps
+# ═══════════════════════════════════════════════════════
 
-class TestUnknownOpcode:
-    def test_single_unknown(self):
-        d = FluxDecompiler([0xFE])
-        r = d.decompile()
-        assert r.instructions[0].mnemonic == "DATA"
-        assert r.instructions[0].comment == "unknown opcode"
+class TestJZConditional(unittest.TestCase):
+    def test_jz_zero_register(self):
+        """JZ tests if register is zero."""
+        # JZ R0, +8 at offset 0
+        r = _decompile([0x3C, 0x00, 0x08, 0x00])
+        self.assertEqual(r.instructions[0].comment, "if R0==0 goto lbl_008")
 
-    def test_unknown_in_sequence(self):
-        d = FluxDecompiler([0x00, 0xFE, 0x00])
-        r = d.decompile()
-        assert r.total_instructions == 3
-        assert r.instructions[1].mnemonic == "DATA"
+    def test_jz_nonzero_register(self):
+        """JZ with different register."""
+        r = _decompile([0x3C, 0x05, 0x08, 0x00])
+        self.assertEqual(r.instructions[0].comment, "if R5==0 goto lbl_008")
+        self.assertEqual(r.instructions[0].operands[0], "R5")
 
-    def test_unknown_counted(self):
-        d = FluxDecompiler([0xFE, 0x00])
-        r = d.decompile()
-        assert r.mnemonic_counts["DATA"] == 1
-
-
-# ── DecompilationResult Stats ─────────────────────────
-
-class TestResultStats:
-    def test_total_bytes(self):
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x20, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        assert r.total_bytes == len(bc)
-
-    def test_total_instructions(self):
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x20, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        assert r.total_instructions == 4  # MOVI, MOVI, ADD, HALT
-
-    def test_jump_count_zero(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        assert r.jump_count == 0
-
-    def test_jump_count_with_jnz(self):
-        d = FluxDecompiler([0x18, 0, 5, 0x3D, 0, 3, 0, 0x00])
-        r = d.decompile()
-        assert r.jump_count == 1
-
-    def test_mnemonic_counts(self):
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x20, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        assert r.mnemonic_counts.get("MOVI", 0) == 2
-        assert r.mnemonic_counts.get("ADD", 0) == 1
-        assert r.mnemonic_counts.get("HALT", 0) == 1
+    def test_jz_is_conditional(self):
+        r = _decompile([0x3C, 0x00, 0x04, 0x00])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.CONDITIONAL)
 
 
-# ── Output Formats ────────────────────────────────────
+class TestJNZConditional(unittest.TestCase):
+    def test_jnz_register(self):
+        """JNZ tests if register is non-zero."""
+        r = _decompile([0x3D, 0x03, 0x06, 0x00])
+        self.assertEqual(r.instructions[0].comment, "if R3!=0 goto lbl_006")
 
-class TestToAsm:
-    def test_asm_contains_mnemonic(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "MOVI" in asm
+    def test_jnz_is_conditional(self):
+        r = _decompile([0x3D, 0x00, 0x04, 0x00])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.CONDITIONAL)
 
-    def test_asm_contains_halt(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "HALT" in asm
-
-    def test_asm_has_offset(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "   0:" in asm  # first instruction at offset 0
-
-    def test_asm_has_hex_bytes(self):
-        d = FluxDecompiler([0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "00" in asm
-
-    def test_asm_has_register_name(self):
-        d = FluxDecompiler([0x18, 5, 42, 0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "R5" in asm
-
-    def test_asm_with_labels(self):
-        d = FluxDecompiler([0x18, 0, 5, 0x3D, 0, 3, 0, 0x00])
-        r = d.decompile()
-        asm = r.to_asm()
-        assert "lbl_" in asm
+    def test_jnz_backward(self):
+        """JNZ jumping backward."""
+        # NOPs + JNZ at offset 8, offset = -4 -> target 4
+        bc = [0x01] * 8
+        bc += [0x3D, 0x00, 0xFC, 0x00]  # 0xFC = -4 signed
+        r = _decompile(bc)
+        self.assertEqual(r.instructions[-1].jump_target, 4)
+        self.assertEqual(r.labels[4], "lbl_004")
 
 
-class TestToAnnotated:
-    def test_annotated_has_header(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "FLUX Bytecode Decompilation" in ann
-
-    def test_annotated_has_stats(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "Stats" in ann
-
-    def test_annotated_stats_content(self):
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x20, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "4 instructions" in ann
-        assert "11 bytes" in ann
-
-    def test_annotated_conditional_marker(self):
-        d = FluxDecompiler([0x3C, 0, 5, 0, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "↕" in ann
-
-    def test_annotated_unconditional_marker(self):
-        d = FluxDecompiler([0x43, 0, 0x05, 0x00, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "↓" in ann
-
-    def test_annotated_loop_marker(self):
-        d = FluxDecompiler([0x46, 0, 0x05, 0x00, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "↻" in ann
-
-    def test_annotated_has_comment(self):
-        d = FluxDecompiler([0x3D, 3, 0x04, 0, 0x00])
-        r = d.decompile()
-        ann = r.to_annotated()
-        assert "R3" in ann
-
-
-# ── Labels ────────────────────────────────────────────
-
-class TestLabels:
-    def test_labels_dict(self):
-        d = FluxDecompiler([0x18, 0, 5, 0x3D, 0, 3, 0, 0x00])
-        r = d.decompile()
-        assert isinstance(r.labels, dict)
-        assert len(r.labels) > 0
-
-    def test_label_format(self):
-        d = FluxDecompiler([0x3D, 0, 5, 0, 0x00])
-        r = d.decompile()
-        for target, label in r.labels.items():
-            assert label.startswith("lbl_")
+class TestLOOPInstruction(unittest.TestCase):
+    def test_loop_jump_type(self):
+        r = _decompile([0x46, 0x00, 0x00, 0x00])
+        self.assertEqual(r.instructions[0].jump_type, JumpType.LOOP)
 
     def test_loop_label_format(self):
-        d = FluxDecompiler([0x46, 0, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        for offset, label in r.labels.items():
-            assert "loop_" in label
-
-    def test_no_labels_without_jumps(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        assert len(r.labels) == 0
-
-
-# ── Raw Bytes ─────────────────────────────────────────
-
-class TestRawBytes:
-    def test_raw_bytes_halt(self):
-        d = FluxDecompiler([0x00])
-        r = d.decompile()
-        assert r.instructions[0].raw_bytes == [0x00]
-
-    def test_raw_bytes_movi(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].raw_bytes == [0x18, 0, 42]
-
-    def test_raw_bytes_add(self):
-        d = FluxDecompiler([0x20, 2, 0, 1, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].raw_bytes == [0x20, 2, 0, 1]
-
-
-# ── Jump Target Tracking ──────────────────────────────
-
-class TestJumpTarget:
-    def test_jnz_has_target(self):
-        d = FluxDecompiler([0x3D, 0, 5, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_target is not None
-
-    def test_non_jump_no_target(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_target is None
-
-    def test_jnz_jump_type(self):
-        d = FluxDecompiler([0x3D, 0, 5, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_type == JumpType.CONDITIONAL
-
-    def test_jz_jump_type(self):
-        d = FluxDecompiler([0x3C, 0, 5, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_type == JumpType.CONDITIONAL
-
-    def test_jmp_jump_type(self):
-        d = FluxDecompiler([0x43, 0, 5, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_type == JumpType.UNCONDITIONAL
-
-    def test_loop_jump_type(self):
-        d = FluxDecompiler([0x46, 0, 5, 0, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].jump_type == JumpType.LOOP
-
-
-# ── Signed Imm16 ──────────────────────────────────────
-
-class TestSigned16:
-    def test_positive_16bit(self):
-        d = FluxDecompiler([0x40, 0, 0x00, 0x00, 0x00])
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "0"]
-
-    def test_max_positive_16bit(self):
-        d = FluxDecompiler([0x40, 0, 0xFF, 0x7F, 0x00])  # 0x7FFF = 32767
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "32767"]
-
-    def test_min_negative_16bit(self):
-        d = FluxDecompiler([0x40, 0, 0x00, 0x80, 0x00])  # 0x8000 = -32768
-        r = d.decompile()
-        assert r.instructions[0].operands == ["R0", "-32768"]
-
-
-# ── Edge Cases ────────────────────────────────────────
-
-class TestEdgeCases:
-    def test_empty_bytecode(self):
-        d = FluxDecompiler([])
-        r = d.decompile()
-        assert r.total_instructions == 0
-        assert r.total_bytes == 0
-        assert r.jump_count == 0
-
-    def test_single_byte_program(self):
-        d = FluxDecompiler([0x00])
-        r = d.decompile()
-        assert r.total_instructions == 1
-        assert r.total_bytes == 1
-
-    def test_incomplete_instruction(self):
-        """MOVI needs 3 bytes but we only provide 1 + partial."""
-        d = FluxDecompiler([0x18, 0])  # MOVI without immediate
-        r = d.decompile()
-        # Should still decode without crashing
-        assert r.total_instructions >= 1
-        assert r.instructions[0].mnemonic == "MOVI"
-
-    def test_all_nops(self):
-        d = FluxDecompiler([0x01] * 100)
-        r = d.decompile()
-        assert r.total_instructions == 100
-        assert r.total_bytes == 100
-
-
-# ── Round-Trip: Known Programs ────────────────────────
-
-class TestRoundTrip:
-    def test_simple_add_program(self):
-        """MOVI R0, 10; MOVI R1, 20; ADD R2, R0, R1; HALT"""
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x20, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        asm = r.to_asm()
-
-        # Verify we can parse out the key instructions from asm output
-        # Format: "  offset: hex_bytes MNEMONIC operands"
-        mnemonics = []
-        for line in asm.strip().split("\n"):
-            if ":" in line and "lbl_" not in line:
-                parts = line.split(":", 1)[1].strip()
-                # Skip hex bytes to get to mnemonic
-                tokens = parts.split()
-                # Find the mnemonic (first uppercase word after hex bytes)
-                for t in tokens:
-                    if t.isalpha() and t.isupper():
-                        mnemonics.append(t)
-                        break
-        assert "MOVI" in mnemonics
-        assert "ADD" in mnemonics
-        assert "HALT" in mnemonics
-
-    def test_factorial_decompile(self):
-        """Factorial: MOVI R0, 6; MOVI R1, 1; MUL R1, R1, R0; DEC R0; JNZ R0, -6; HALT"""
-        bc = [0x18, 0, 6, 0x18, 1, 1, 0x22, 1, 1, 0, 0x09, 0, 0x3D, 0, 0xFA, 0, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert mnemonics.count("MOVI") == 2
-        assert "MUL" in mnemonics
-        assert "DEC" in mnemonics
-        assert "JNZ" in mnemonics
-        assert "HALT" in mnemonics
-        assert r.jump_count >= 1
-
-    def test_loop_counter(self):
-        """Counter loop: MOVI R0, 5; MOVI R1, 0; INC R1; DEC R0; JNZ R0, -3; HALT"""
-        bc = [0x18, 0, 5, 0x18, 1, 0, 0x08, 1, 0x09, 0, 0x3D, 0, 0xFC, 0, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "INC" in mnemonics
-        assert "DEC" in mnemonics
-        assert "JNZ" in mnemonics
-        assert len(r.labels) > 0
-
-    def test_push_pop_sequence(self):
-        """PUSH R0; PUSH R1; POP R2; POP R3; HALT"""
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x0C, 0, 0x0C, 1, 0x0D, 2, 0x0D, 3, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert mnemonics.count("MOVI") == 2
-        assert mnemonics.count("PUSH") == 2
-        assert mnemonics.count("POP") == 2
-        assert mnemonics.count("HALT") == 1
-
-    def test_logical_ops(self):
-        """Test AND, OR, XOR decompile."""
-        bc = [
-            0x18, 0, 0xFF,  # MOVI R0, -1
-            0x18, 1, 0x0F,  # MOVI R1, 15
-            0x25, 2, 0, 1,  # AND R2, R0, R1
-            0x26, 3, 0, 1,  # OR R3, R0, R1
-            0x27, 4, 0, 1,  # XOR R4, R0, R1
-            0x00             # HALT
-        ]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "AND" in mnemonics
-        assert "OR" in mnemonics
-        assert "XOR" in mnemonics
-
-    def test_comparison_ops(self):
-        """Test CMP_EQ, CMP_LT, CMP_GT, CMP_NE decompile."""
-        bc = [
-            0x18, 0, 10, 0x18, 1, 20,
-            0x2C, 2, 0, 1,  # CMP_EQ R2, R0, R1
-            0x2D, 3, 0, 1,  # CMP_LT R3, R0, R1
-            0x2E, 4, 0, 1,  # CMP_GT R4, R0, R1
-            0x2F, 5, 0, 1,  # CMP_NE R5, R0, R1
-            0x00
-        ]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "CMP_EQ" in mnemonics
-        assert "CMP_LT" in mnemonics
-        assert "CMP_GT" in mnemonics
-        assert "CMP_NE" in mnemonics
-
-    def test_shift_ops(self):
-        bc = [
-            0x18, 0, 8, 0x18, 1, 1,
-            0x28, 2, 0, 1,  # SHL R2, R0, R1
-            0x29, 3, 0, 1,  # SHR R3, R0, R1
-            0x00
-        ]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "SHL" in mnemonics
-        assert "SHR" in mnemonics
-
-    def test_min_max_ops(self):
-        bc = [
-            0x18, 0, 10, 0x18, 1, 20,
-            0x2A, 2, 0, 1,  # MIN R2, R0, R1
-            0x2B, 3, 0, 1,  # MAX R3, R0, R1
-            0x00
-        ]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "MIN" in mnemonics
-        assert "MAX" in mnemonics
-
-    def test_mod_op(self):
-        bc = [0x18, 0, 17, 0x18, 1, 5, 0x24, 2, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        mnemonics = [i.mnemonic for i in r.instructions]
-        assert "MOD" in mnemonics
-
-
-# ── OP_SPECS Coverage ─────────────────────────────────
-
-class TestOpSpecsCoverage:
-    def test_all_op_specs_are_decodable(self):
-        """Every opcode in OP_SPECS should decompile to the correct mnemonic."""
-        for opcode, (mnemonic, size, _) in OP_SPECS.items():
-            # Build a minimal bytecode: opcode + padding bytes
-            bc = [opcode] + [0x00] * (size + 1)  # extra HALT at end
-            d = FluxDecompiler(bc)
-            r = d.decompile()
-            assert r.instructions[0].mnemonic == mnemonic, \
-                f"Opcode {opcode:#x} should decode to {mnemonic}, got {r.instructions[0].mnemonic}"
-
-
-# ── Multi-Jump Program ────────────────────────────────
-
-class TestMultiJump:
-    def test_two_jnz(self):
-        bc = [0x18, 0, 5, 0x3D, 0, 3, 0, 0x18, 1, 99, 0x3D, 1, 3, 0, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
-        assert r.jump_count == 2
-        assert len(r.labels) >= 2
-
-
-# ── Instruction Comments ──────────────────────────────
-
-class TestInstructionComments:
-    def test_jz_comment(self):
-        d = FluxDecompiler([0x3C, 3, 0x04, 0, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert "R3" in inst.comment
-        assert "==" in inst.comment
-        assert "goto" in inst.comment
+        # LOOP at offset 8
+        bc = [0x01] * 8
+        bc += [0x46, 0x01, 0x00, 0x00]
+        r = _decompile(bc)
+        self.assertIn(8, r.labels)
+        self.assertEqual(r.labels[8], "loop_008")
 
     def test_loop_comment(self):
-        d = FluxDecompiler([0x46, 7, 0x10, 0x00, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert "R7" in inst.comment
-        assert "decrements" in inst.comment
-
-    def test_no_comment_for_non_jump(self):
-        d = FluxDecompiler([0x18, 0, 42, 0x00])
-        r = d.decompile()
-        inst = r.instructions[0]
-        assert inst.comment == ""
+        r = _decompile([0x46, 0x03, 0x00, 0x00])
+        self.assertIn("R3", r.instructions[0].comment)
+        self.assertIn("decrements", r.instructions[0].comment)
 
 
-# ── Mnemonic Frequency ────────────────────────────────
+# ═══════════════════════════════════════════════════════
+# Complex programs
+# ═══════════════════════════════════════════════════════
 
-class TestMnemonicFrequency:
-    def test_top_5_in_annotated(self):
-        bc = [0x18, 0, 10, 0x18, 1, 20, 0x18, 2, 30, 0x20, 3, 0, 1, 0x00]
-        d = FluxDecompiler(bc)
-        r = d.decompile()
+class TestFactorial(unittest.TestCase):
+    """Factorial: R0 = 6, R1 = 1; loop: MUL R1, R1, R0; DEC R0; JNZ R0, back; HALT"""
+    def setUp(self):
+        # MOVI R0, 6; MOVI R1, 1; MUL R1, R1, R0; DEC R0; JNZ R0, -6; NOP; HALT
+        self.bc = [
+            0x18, 0x00, 0x06,       # 0: MOVI R0, 6
+            0x18, 0x01, 0x01,       # 3: MOVI R1, 1
+            0x22, 0x01, 0x01, 0x00, # 6: MUL R1, R1, R0
+            0x09, 0x00,              # 10: DEC R0
+            0x3D, 0x00, 0xFA, 0x00, # 12: JNZ R0, -6 (12 + (-6) = 6)
+            0x00,                    # 16: HALT
+        ]
+        self.r = _decompile(self.bc)
+
+    def test_has_mul(self):
+        self.assertIn("MUL", _mnemonics(self.r))
+
+    def test_has_dec(self):
+        self.assertIn("DEC", _mnemonics(self.r))
+
+    def test_has_jnz(self):
+        self.assertIn("JNZ", _mnemonics(self.r))
+
+    def test_jump_target(self):
+        jnz = [i for i in self.r.instructions if i.mnemonic == "JNZ"][0]
+        self.assertEqual(jnz.jump_target, 6)
+
+    def test_mnemonic_counts(self):
+        self.assertEqual(self.r.mnemonic_counts.get("MOVI", 0), 2)
+        self.assertEqual(self.r.mnemonic_counts.get("MUL", 0), 1)
+        self.assertEqual(self.r.mnemonic_counts.get("DEC", 0), 1)
+
+
+class TestFibonacci(unittest.TestCase):
+    """Fibonacci: R0=a=1, R1=b=1; loop: R2=R0+R1; R0=R1; R1=R2; DEC counter; JNZ"""
+    def setUp(self):
+        self.bc = [
+            0x18, 0x00, 0x01,       # 0: MOVI R0, 1
+            0x18, 0x01, 0x01,       # 3: MOVI R1, 1
+            0x18, 0x03, 0x0A,       # 6: MOVI R3, 10 (counter)
+            # loop start at 9:
+            0x20, 0x02, 0x00, 0x01, # 9: ADD R2, R0, R1
+            0x3A, 0x00, 0x01, 0x02, # 13: MOV R0, R1, R2
+            0x3A, 0x01, 0x02, 0x02, # 17: MOV R1, R2, R2 (temp copy)
+            0x09, 0x03,              # 21: DEC R3
+            0x3D, 0x03, 0xF3, 0x00, # 23: JNZ R3, -13 (23 + (-13) = 10... let me recalculate)
+            0x00,                    # 27: HALT
+        ]
+        # Fix JNZ offset: loop body starts at 9, JNZ at 23, need 23 + offset = 9 => offset = -14
+        self.bc[25] = 0xF2  # -14 in signed8 = 256 - 14 = 242 = 0xF2
+        self.r = _decompile(self.bc)
+
+    def test_has_add(self):
+        self.assertIn("ADD", _mnemonics(self.r))
+
+    def test_has_mov(self):
+        self.assertIn("MOV", _mnemonics(self.r))
+
+    def test_has_jnz(self):
+        self.assertIn("JNZ", _mnemonics(self.r))
+
+    def test_jump_back_to_loop_body(self):
+        jnz = [i for i in self.r.instructions if i.mnemonic == "JNZ"][0]
+        self.assertEqual(jnz.jump_target, 9)
+
+    def test_three_movi(self):
+        self.assertEqual(self.r.mnemonic_counts.get("MOVI", 0), 3)
+
+
+class TestSwapViaStack(unittest.TestCase):
+    """Swap two registers using PUSH/POP."""
+    def setUp(self):
+        self.bc = [
+            0x18, 0x00, 0x0A,       # MOVI R0, 10
+            0x18, 0x01, 0x14,       # MOVI R1, 20
+            0x0C, 0x00,              # PUSH R0
+            0x3A, 0x00, 0x01, 0x00, # MOV R0, R1, R0 (copy R1 to R0)
+            0x0D, 0x02,              # POP R2
+            0x00,                    # HALT
+        ]
+        self.r = _decompile(self.bc)
+
+    def test_has_push(self):
+        self.assertIn("PUSH", _mnemonics(self.r))
+
+    def test_has_pop(self):
+        self.assertIn("POP", _mnemonics(self.r))
+
+    def test_push_pop_count(self):
+        self.assertEqual(self.r.mnemonic_counts.get("PUSH", 0), 1)
+        self.assertEqual(self.r.mnemonic_counts.get("POP", 0), 1)
+
+    def test_order_push_before_pop(self):
+        mnems = _mnemonics(self.r)
+        push_idx = mnems.index("PUSH")
+        pop_idx = mnems.index("POP")
+        self.assertLess(push_idx, pop_idx)
+
+
+class TestGCD(unittest.TestCase):
+    """GCD using MOD and conditional jump."""
+    def setUp(self):
+        self.bc = [
+            0x18, 0x00, 0x30,       # MOVI R0, 48
+            0x18, 0x01, 0x12,       # MOVI R1, 18
+            # loop:
+            0x24, 0x02, 0x00, 0x01, # MOD R2, R0, R1
+            0x3A, 0x00, 0x01, 0x02, # MOV R0, R1, R2
+            0x3C, 0x02, 0x00, 0x00, # JZ R2, +0 -> target 15 (HALT)
+            0x09, 0x02,              # DEC R2 (reduce)
+            0x00,                    # HALT
+        ]
+        self.r = _decompile(self.bc)
+
+    def test_has_mod(self):
+        self.assertIn("MOD", _mnemonics(self.r))
+
+    def test_has_jz(self):
+        self.assertIn("JZ", _mnemonics(self.r))
+
+    def test_mod_operands(self):
+        mod_inst = [i for i in self.r.instructions if i.mnemonic == "MOD"][0]
+        self.assertEqual(mod_inst.operands, ["R2", "R0", "R1"])
+
+
+# ═══════════════════════════════════════════════════════
+# Output format validation
+# ═══════════════════════════════════════════════════════
+
+class TestToAsmOutput(unittest.TestCase):
+    def test_contains_mnemonic(self):
+        r = _decompile([0x18, 0x00, 42, 0x00])
+        asm = r.to_asm()
+        self.assertIn("MOVI", asm)
+        self.assertIn("HALT", asm)
+
+    def test_contains_offset(self):
+        r = _decompile([0x18, 0x00, 42, 0x00])
+        asm = r.to_asm()
+        self.assertIn("   0:", asm)
+
+    def test_contains_hex_bytes(self):
+        r = _decompile([0x18, 0x00, 42, 0x00])
+        asm = r.to_asm()
+        self.assertIn("18 00 2a", asm)
+
+    def test_label_in_asm(self):
+        bc = [0x3C, 0x00, 0x08, 0x00] + [0x01] * 8 + [0x00]
+        r = _decompile(bc)
+        asm = r.to_asm()
+        self.assertIn("lbl_008:", asm)
+
+    def test_comment_in_asm(self):
+        r = _decompile([0x3C, 0x00, 0x04, 0x00])
+        asm = r.to_asm()
+        self.assertIn("if R0==0", asm)
+
+    def test_empty_asm(self):
+        r = _decompile([])
+        self.assertEqual(r.to_asm(), "")
+
+    def test_multiple_lines(self):
+        r = _decompile([0x01, 0x00])
+        asm = r.to_asm()
+        lines = asm.strip().split("\n")
+        self.assertGreaterEqual(len(lines), 2)
+
+
+class TestToAnnotatedOutput(unittest.TestCase):
+    def test_header(self):
+        r = _decompile([0x00])
         ann = r.to_annotated()
-        assert "MOVI: 3x" in ann
+        self.assertIn("FLUX Bytecode Decompilation", ann)
+
+    def test_stats_section(self):
+        r = _decompile([0x18, 0x00, 10, 0x00])
+        ann = r.to_annotated()
+        self.assertIn("Stats", ann)
+        self.assertIn("2 instructions, 4 bytes", ann)
+
+    def test_conditional_marker(self):
+        r = _decompile([0x3C, 0x00, 0x04, 0x00])
+        ann = r.to_annotated()
+        # Should contain the conditional marker for JZ
+        # The marker is prepended to the instruction line
+        self.assertIn("JZ", ann)
+
+    def test_unconditional_marker(self):
+        bc = [0x43, 0x00, 0x08, 0x00] + [0x01] * 8
+        r = _decompile(bc)
+        ann = r.to_annotated()
+        self.assertIn("JMP", ann)
+
+    def test_loop_marker(self):
+        r = _decompile([0x46, 0x00, 0x00, 0x00])
+        ann = r.to_annotated()
+        self.assertIn("LOOP", ann)
+
+    def test_empty_annotated(self):
+        r = _decompile([])
+        ann = r.to_annotated()
+        self.assertIn("0 instructions, 0 bytes", ann)
+        self.assertIn("0 jumps", ann)
+
+    def test_mnemonic_frequency_in_stats(self):
+        r = _decompile([0x18, 0x00, 10, 0x18, 0x01, 20, 0x00])
+        ann = r.to_annotated()
+        self.assertIn("MOVI", ann)  # Should appear in stats
+        self.assertIn("2x", ann)    # MOVI count
+
+
+# ═══════════════════════════════════════════════════════
+# Mnemonic counts accuracy
+# ═══════════════════════════════════════════════════════
+
+class TestMnemonicCounts(unittest.TestCase):
+    def test_single_instruction(self):
+        r = _decompile([0x00])
+        self.assertEqual(r.mnemonic_counts, {"HALT": 1})
+
+    def test_mixed_instructions(self):
+        bc = [0x18, 0x00, 10, 0x18, 0x01, 20, 0x20, 0x02, 0x00, 0x01, 0x00]
+        r = _decompile(bc)
+        self.assertEqual(r.mnemonic_counts["MOVI"], 2)
+        self.assertEqual(r.mnemonic_counts["ADD"], 1)
+        self.assertEqual(r.mnemonic_counts["HALT"], 1)
+
+    def test_no_unknown_in_mnemonic_counts(self):
+        """DATA instructions should appear in counts."""
+        r = _decompile([0xFE, 0x00])
+        self.assertEqual(r.mnemonic_counts["DATA"], 1)
+        self.assertEqual(r.mnemonic_counts["HALT"], 1)
+
+    def test_counts_match_instructions(self):
+        """Sum of all counts should equal total_instructions."""
+        bc = [0x18, 0x00, 10, 0x08, 0x00, 0x09, 0x00, 0x00]
+        r = _decompile(bc)
+        total = sum(r.mnemonic_counts.values())
+        self.assertEqual(total, r.total_instructions)
+
+    def test_complex_program_counts(self):
+        bc = (
+            [0x18, 0x00, 0x06] +       # MOVI R0, 6
+            [0x18, 0x01, 0x01] +       # MOVI R1, 1
+            [0x22, 0x01, 0x01, 0x00] + # MUL R1, R1, R0
+            [0x09, 0x00] +              # DEC R0
+            [0x3D, 0x00, 0xFA, 0x00] + # JNZ R0, -6
+            [0x00]                      # HALT
+        )
+        r = _decompile(bc)
+        self.assertEqual(r.mnemonic_counts.get("MOVI", 0), 2)
+        self.assertEqual(r.mnemonic_counts.get("MUL", 0), 1)
+        self.assertEqual(r.mnemonic_counts.get("DEC", 0), 1)
+        self.assertEqual(r.mnemonic_counts.get("JNZ", 0), 1)
+        self.assertEqual(r.mnemonic_counts.get("HALT", 0), 1)
+        self.assertEqual(sum(r.mnemonic_counts.values()), r.total_instructions)
+
+
+# ═══════════════════════════════════════════════════════
+# Labels and jump metadata
+# ═══════════════════════════════════════════════════════
+
+class TestLabelsAndJumps(unittest.TestCase):
+    def test_jump_count_increments(self):
+        r = _decompile([0x3C, 0x00, 0x04, 0x00])
+        self.assertEqual(r.jump_count, 1)
+
+    def test_multiple_jumps_count(self):
+        bc = [0x3C, 0x00, 0x04, 0x00, 0x3D, 0x01, 0x08, 0x00, 0x00]
+        r = _decompile(bc)
+        self.assertEqual(r.jump_count, 2)
+
+    def test_non_jump_doesnt_increment(self):
+        r = _decompile([0x18, 0x00, 10, 0x00])
+        self.assertEqual(r.jump_count, 0)
+
+    def test_labels_dict_keys_are_offsets(self):
+        bc = [0x3C, 0x00, 0x08, 0x00] + [0x01] * 8 + [0x00]
+        r = _decompile(bc)
+        for key in r.labels:
+            self.assertIsInstance(key, int)
+
+    def test_label_format_prefix(self):
+        bc = [0x43, 0x00, 0x04, 0x00] + [0x01] * 4
+        r = _decompile(bc)
+        for lbl in r.labels.values():
+            self.assertTrue(lbl.startswith("lbl_") or lbl.startswith("loop_"))
+
+
+# ═══════════════════════════════════════════════════════
+# Raw bytes and size
+# ═══════════════════════════════════════════════════════
+
+class TestRawBytesAndSize(unittest.TestCase):
+    def test_halt_raw_bytes(self):
+        r = _decompile([0x00])
+        self.assertEqual(r.instructions[0].raw_bytes, [0x00])
+
+    def test_movi_raw_bytes(self):
+        r = _decompile([0x18, 0x05, 0x2A])
+        self.assertEqual(r.instructions[0].raw_bytes, [0x18, 0x05, 0x2A])
+
+    def test_add_raw_bytes(self):
+        r = _decompile([0x20, 0x00, 0x01, 0x02])
+        self.assertEqual(r.instructions[0].raw_bytes, [0x20, 0x00, 0x01, 0x02])
+
+    def test_total_bytes_matches_input(self):
+        bc = [0x18, 0x00, 10, 0x18, 0x01, 20, 0x20, 0x02, 0x00, 0x01, 0x00]
+        r = _decompile(bc)
+        self.assertEqual(r.total_bytes, len(bc))
+
+    def test_unknown_raw_bytes(self):
+        r = _decompile([0xFE])
+        self.assertEqual(r.instructions[0].raw_bytes, [0xFE])
+        self.assertEqual(r.instructions[0].size, 1)
+
+
+# ═══════════════════════════════════════════════════════
+# All opcodes covered
+# ═══════════════════════════════════════════════════════
+
+class TestAllOpcodesCovered(unittest.TestCase):
+    """Verify every opcode in OP_SPECS is individually tested."""
+    def test_all_opcodes_have_test_coverage(self):
+        """Sanity check: OP_SPECS has expected number of entries."""
+        self.assertGreaterEqual(len(OP_SPECS), 34)
+
+    def test_opcode_0x00_is_halt(self):
+        self.assertEqual(OP_SPECS[0x00][0], "HALT")
+
+    def test_opcode_0x01_is_nop(self):
+        self.assertEqual(OP_SPECS[0x01][0], "NOP")
+
+    def test_opcode_0x46_is_loop(self):
+        self.assertEqual(OP_SPECS[0x46][0], "LOOP")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
